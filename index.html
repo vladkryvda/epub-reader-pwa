@@ -7,7 +7,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Minimal Reader</title>
     
-    <!-- ПОРЯДОК СКРИПТІВ КРИТИЧНИЙ -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dexie@3/dist/dexie.min.js"></script>
@@ -16,58 +15,60 @@
         :root { --bg: #fff; --text: #111; --accent: #007aff; }
         [data-theme="dark"] { --bg: #121212; --text: #eee; }
         
-        body { 
-            margin: 0; font-family: -apple-system, system-ui, sans-serif; 
+        body, html { 
+            margin: 0; padding: 0; height: 100%; 
             background: var(--bg); color: var(--text); 
-            height: 100vh; overflow: hidden;
+            font-family: -apple-system, system-ui, sans-serif;
+            overflow: hidden; /* Важливо для стабільності */
         }
 
-        #library { padding: env(safe-area-inset-top) 20px 40px; max-width: 800px; margin: 0 auto; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 20px 0; }
-        
+        /* Бібліотека */
+        #library { 
+            height: 100%; overflow-y: auto; padding: env(safe-area-inset-top) 20px 100px; 
+            box-sizing: border-box; transition: 0.3s;
+        }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 30px 0; }
         .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 20px; }
-        
         .book-item { cursor: pointer; }
         .cover { 
-            aspect-ratio: 2/3; background: #f0f0f0; border-radius: 12px; 
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: flex; 
+            aspect-ratio: 2/3; background: #f4f4f4; border-radius: 10px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08); display: flex; 
             align-items: center; justify-content: center; padding: 15px;
-            font-size: 12px; text-align: center; margin-bottom: 8px; border: 0.5px solid rgba(0,0,0,0.1);
+            font-size: 11px; text-align: center; margin-bottom: 8px;
+            border: 0.5px solid rgba(0,0,0,0.05);
         }
-        [data-theme="dark"] .cover { background: #222; border-color: #333; }
+        [data-theme="dark"] .cover { background: #1e1e1e; border-color: #333; }
 
+        /* Читалка */
         #reader { display: none; position: fixed; inset: 0; background: var(--bg); z-index: 100; }
-        #viewer { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
         
+        #viewer { 
+            height: 100vh; overflow-y: scroll; 
+            -webkit-overflow-scrolling: touch; /* Плавний скрол для iOS */
+        }
+
+        /* Навігація, яка ховається */
         .nav-bar { 
-            position: fixed; top: 0; width: 100%; height: 60px; 
+            position: fixed; top: 0; width: 100%; height: 64px; 
             background: var(--bg); display: flex; align-items: center; 
             padding: env(safe-area-inset-top) 20px 0; border-bottom: 0.5px solid rgba(0,0,0,0.1); 
             z-index: 1000; justify-content: space-between; box-sizing: border-box;
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
         }
+        .nav-bar.hidden { transform: translateY(-100%); }
 
-        .loading-overlay { 
-            position: fixed; inset: 0; background: rgba(255,255,255,0.9); 
-            display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 2000;
-        }
-        [data-theme="dark"] .loading-overlay { background: rgba(0,0,0,0.9); }
-
-        .btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; font-weight: 600; font-size: 14px; }
-        .hidden { display: none !important; }
+        .btn { background: var(--accent); color: white; border: none; padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 14px; cursor: pointer; }
+        .loading { position: fixed; inset: 0; background: var(--bg); z-index: 2000; display: none; align-items: center; justify-content: center; opacity: 0.8; }
     </style>
 </head>
 <body>
 
-<div id="loading" class="loading-overlay">
-    <div style="margin-bottom:10px">Завантаження...</div>
-</div>
+<div id="loading" class="loading">Завантаження...</div>
 
 <div id="library">
     <header>
-        <h1 style="font-size: 32px;">Книги</h1>
-        <label class="btn">
-            Додати + <input type="file" id="file-input" accept=".epub" hidden>
-        </label>
+        <h1 style="font-size: 34px; letter-spacing: -1px;">Книги</h1>
+        <label class="btn">Додати <input type="file" id="file-input" accept=".epub" hidden></label>
     </header>
     <div id="book-list" class="book-grid"></div>
 </div>
@@ -75,139 +76,131 @@
 <div id="reader">
     <div class="nav-bar" id="nav">
         <button onclick="closeBook()" style="background:none; border:none; color:var(--accent); font-size:17px; cursor:pointer;">← Назад</button>
-        <div id="title-mini" style="font-size:12px; font-weight:600; opacity:0.6;"></div>
-        <button onclick="toggleDark()" style="background:none; border:none; font-size:20px; cursor:pointer;">🌓</button>
+        <button onclick="toggleTheme()" style="background:none; border:none; font-size:22px; cursor:pointer;">🌓</button>
     </div>
     <div id="viewer"></div>
 </div>
 
 <script>
-    const db = new Dexie("ReaderDBv3");
+    const db = new Dexie("ReaderDBv4");
     db.version(1).stores({ books: "++id, title, data, location" });
 
-    const fileInput = document.getElementById('file-input');
-    const loading = document.getElementById('loading');
     let rendition = null;
-    let bookInstance = null;
+    let currentBookId = null;
+    let lastScrollY = 0;
+    let saveTimeout = null;
 
-    // Ініціалізація
-    async function start() {
-        await renderLibrary();
+    // --- БІБЛІОТЕКА ---
+    async function init() {
+        renderLibrary();
     }
 
-    fileInput.onchange = async (e) => {
+    document.getElementById('file-input').onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
-        loading.style.display = 'flex';
+        document.getElementById('loading').style.display = 'flex';
         
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            // Перевірка чи завантажився JSZip
-            if (typeof JSZip === 'undefined') {
-                throw new Error("JSZip не завантажено. Перевірте з'єднання з інтернетом.");
-            }
-
-            const book = ePub(arrayBuffer);
-            let title = file.name;
-
-            try {
-                const meta = await book.loaded.metadata;
-                if (meta.title) title = meta.title;
-            } catch (mErr) { console.log("Метадані не знайдено"); }
-
-            await db.books.add({
-                title: title,
-                data: arrayBuffer,
-                location: null
-            });
-
-            renderLibrary();
-        } catch (err) {
-            alert("Помилка: " + err.message);
-        } finally {
-            loading.style.display = 'none';
-            fileInput.value = '';
-        }
+        const arrayBuffer = await file.arrayBuffer();
+        const book = ePub(arrayBuffer);
+        const meta = await book.loaded.metadata;
+        
+        await db.books.add({
+            title: meta.title || file.name,
+            data: arrayBuffer,
+            location: null
+        });
+        
+        document.getElementById('loading').style.display = 'none';
+        renderLibrary();
     };
 
     async function renderLibrary() {
         const books = await db.books.toArray();
-        const list = document.getElementById('book-list');
-        list.innerHTML = books.map(b => `
+        document.getElementById('book-list').innerHTML = books.map(b => `
             <div class="book-item" onclick="openBook(${b.id})">
                 <div class="cover">${b.title}</div>
-                <div style="font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${b.title}</div>
+                <div style="font-size:12px; font-weight:600">${b.title}</div>
             </div>
         `).join('');
     }
 
+    // --- ЧИТАЛКА ---
     async function openBook(id) {
         const bookData = await db.books.get(id);
-        loading.style.display = 'flex';
+        currentBookId = id;
         document.getElementById('reader').style.display = 'block';
-        document.getElementById('title-mini').innerText = bookData.title;
+        document.getElementById('loading').style.display = 'flex';
 
-        try {
-            if (bookInstance) bookInstance.destroy();
-            
-            bookInstance = ePub(bookData.data);
-            rendition = bookInstance.renderTo("viewer", {
-                width: "100%",
-                height: "100%",
-                flow: "scrolled",
-                manager: "continuous"
-            });
+        const book = ePub(bookData.data);
+        rendition = book.renderTo("viewer", {
+            width: "100%",
+            height: "100%",
+            flow: "scrolled",
+            manager: "continuous"
+        });
 
-            applyTheme();
+        applyThemeStyles();
 
-            await rendition.display(bookData.location || undefined);
+        await rendition.display(bookData.location || undefined);
+        document.getElementById('loading').style.display = 'none';
 
-            rendition.on("relocated", loc => {
-                db.books.update(id, { location: loc.start.cfi });
-            });
+        // Відстеження скролу для хедера
+        const viewer = document.getElementById('viewer');
+        viewer.addEventListener('scroll', handleScroll, { passive: true });
 
-            // Навігація при кліку
-            rendition.on("click", () => {
-                const nav = document.getElementById('nav');
-                nav.style.display = nav.style.display === 'none' ? 'flex' : 'none';
-            });
+        // Збереження позиції (з дебаунсом для плавності)
+        rendition.on("relocated", loc => {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                db.books.update(currentBookId, { location: loc.start.cfi });
+            }, 2000);
+        });
+    }
 
-        } catch (err) {
-            alert("Помилка відкриття: " + err.message);
-            closeBook();
-        } finally {
-            loading.style.display = 'none';
+    function handleScroll() {
+        const viewer = document.getElementById('viewer');
+        const nav = document.getElementById('nav');
+        const currentScrollY = viewer.scrollTop;
+
+        // Якщо скролимо вниз — ховаємо, якщо вгору — показуємо
+        if (currentScrollY > lastScrollY && currentScrollY > 100) {
+            nav.classList.add('hidden');
+        } else {
+            nav.classList.remove('hidden');
         }
+        lastScrollY = currentScrollY;
     }
 
     function closeBook() {
         document.getElementById('reader').style.display = 'none';
         if (rendition) rendition.destroy();
+        lastScrollY = 0;
     }
 
-    function toggleDark() {
+    function toggleTheme() {
         const body = document.body;
-        body.setAttribute('data-theme', body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-        applyTheme();
+        const newTheme = body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        body.setAttribute('data-theme', newTheme);
+        applyThemeStyles();
     }
 
-    function applyTheme() {
+    function applyThemeStyles() {
         if (!rendition) return;
         const isDark = document.body.getAttribute('data-theme') === 'dark';
-        rendition.themes.register("style", {
+        rendition.themes.register("main", {
             body: {
                 "background": isDark ? "#121212" : "#fff",
                 "color": isDark ? "#eee" : "#111",
-                "padding": "80px 25px !important",
+                "padding": "100px 25px 150px !important", /* Великі відступи */
                 "font-family": "-apple-system, sans-serif !important",
-                "line-height": "1.6 !important"
+                "line-height": "1.7 !important",
+                "font-size": "18px !important"
             }
         });
-        rendition.themes.select("style");
+        rendition.themes.select("main");
     }
 
-    start();
+    init();
 </script>
 </body>
 </html>
