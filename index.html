@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Minimal Reader</title>
+    
+    <!-- Бібліотеки -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.88/epub.min.js"></script>
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+
+    <style>
+        :root {
+            --bg: #ffffff;
+            --text: #1a1a1a;
+            --accent: #007aff;
+            --ui-bg: rgba(255, 255, 255, 0.8);
+        }
+
+        [data-theme="dark"] {
+            --bg: #121212;
+            --text: #e0e0e0;
+            --ui-bg: rgba(18, 18, 18, 0.9);
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100%;
+            transition: background 0.3s;
+        }
+
+        /* Бібліотека */
+        #library-view {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: env(safe-area-inset-top) 20px 40px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 40px 0;
+        }
+
+        h1 { font-weight: 700; font-size: 28px; margin: 0; }
+
+        .add-btn {
+            background: var(--accent);
+            color: white;
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 20px;
+        }
+
+        .book-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 25px;
+        }
+
+        .book-card {
+            cursor: pointer;
+            animation: fadeIn 0.5s ease;
+        }
+
+        .cover-placeholder {
+            aspect-ratio: 2/3;
+            background: #f0f0f0;
+            border-radius: 6px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-bottom: 10px;
+            display: flex; align-items: center; justify-content: center;
+            padding: 15px; text-align: center; font-size: 13px;
+            overflow: hidden;
+            border: 1px solid rgba(0,0,0,0.05);
+        }
+
+        [data-theme="dark"] .cover-placeholder { background: #222; border-color: #333; }
+
+        /* Читалка */
+        #reader-view {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--bg);
+            z-index: 100;
+            display: flex; flex-direction: column;
+        }
+
+        .reader-nav {
+            position: absolute; top: 0; width: 100%; height: 60px;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 0 20px; box-sizing: border-box;
+            background: var(--ui-bg);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+            border-bottom: 0.5px solid rgba(0,0,0,0.1);
+            transition: opacity 0.3s;
+        }
+
+        .reader-nav.hidden { opacity: 0; pointer-events: none; }
+
+        #viewer {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* Кнопки */
+        button {
+            background: none; border: none; font-size: 16px; color: var(--accent);
+            cursor: pointer; padding: 10px;
+        }
+
+        .hidden { display: none !important; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Стилізація epub контенту */
+        .epub-container { max-width: 800px !important; margin: 0 auto !important; }
+    </style>
+</head>
+<body>
+
+    <!-- Екран бібліотеки -->
+    <div id="library-view">
+        <header>
+            <h1>Бібліотека</h1>
+            <label class="add-btn">
+                + <input type="file" id="file-input" accept=".epub" hidden>
+            </label>
+        </header>
+        <div id="book-list" class="book-grid"></div>
+    </div>
+
+    <!-- Екран читалки -->
+    <div id="reader-view" class="hidden">
+        <nav id="reader-nav" class="reader-nav">
+            <button onclick="showLibrary()">← Мої книги</button>
+            <div id="book-title" style="font-size: 14px; font-weight: 600; max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
+            <button onclick="toggleTheme()">🌓</button>
+        </nav>
+        <div id="viewer"></div>
+    </div>
+
+    <script>
+        // --- 1. БАЗА ДАНИХ (Dexie) ---
+        const db = new Dexie("ReaderDB");
+        db.version(1).stores({
+            books: "++id, title, file, lastLocation"
+        });
+
+        const viewer = document.getElementById('viewer');
+        const bookList = document.getElementById('book-list');
+        const fileInput = document.getElementById('file-input');
+        const readerView = document.getElementById('reader-view');
+        const readerNav = document.getElementById('reader-nav');
+
+        let rendition = null;
+        let currentBook = null;
+        let navTimer = null;
+
+        // --- 2. ЛОГІКА БІБЛІОТЕКИ ---
+
+        async function init() {
+            renderLibrary();
+            registerServiceWorker();
+        }
+
+        fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const book = ePub(file);
+            const meta = await book.loaded.metadata;
+            
+            await db.books.add({
+                title: meta.title || file.name,
+                file: file,
+                lastLocation: null
+            });
+            
+            renderLibrary();
+        };
+
+        async function renderLibrary() {
+            const books = await db.books.toArray();
+            bookList.innerHTML = books.map(book => `
+                <div class="book-card" onclick="openBook(${book.id})">
+                    <div class="cover-placeholder">${book.title}</div>
+                    <div style="font-size: 13px; font-weight: 500; padding: 0 4px">${book.title}</div>
+                </div>
+            `).join('');
+        }
+
+        // --- 3. ЛОГІКА ЧИТАННЯ ---
+
+        async function openBook(id) {
+            const bookData = await db.books.get(id);
+            currentBook = id;
+            
+            readerView.classList.remove('hidden');
+            document.getElementById('book-title').innerText = bookData.title;
+
+            const book = ePub(bookData.file);
+            
+            // Налаштування рендерингу (Скрол)
+            rendition = book.renderTo("viewer", {
+                width: "100%",
+                height: "100%",
+                flow: "scrolled",
+                manager: "continuous"
+            });
+
+            // Тема при завантаженні
+            applyThemeToRendition();
+
+            const displayPromise = bookData.lastLocation 
+                ? rendition.display(bookData.lastLocation) 
+                : rendition.display();
+
+            displayPromise.then(() => {
+                console.log("Book loaded");
+            });
+
+            // Збереження прогресу
+            rendition.on("relocated", (location) => {
+                db.books.update(id, { lastLocation: location.start.cfi });
+            });
+
+            // Керування навігацією (приховування при читанні)
+            viewer.onmousedown = viewer.ontouchstart = toggleNav;
+        }
+
+        function showLibrary() {
+            if (rendition) rendition.destroy();
+            readerView.classList.add('hidden');
+            renderLibrary();
+        }
+
+        function toggleTheme() {
+            const body = document.body;
+            const newTheme = body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            applyThemeToRendition();
+        }
+
+        function applyThemeToRendition() {
+            if (!rendition) return;
+            const isDark = document.body.getAttribute('data-theme') === 'dark';
+            rendition.themes.register("main", {
+                body: {
+                    "background": isDark ? "#121212 !important" : "#ffffff !important",
+                    "color": isDark ? "#e0e0e0 !important" : "#1a1a1a !important",
+                    "font-family": "-apple-system, sans-serif !important",
+                    "line-height": "1.6 !important",
+                    "padding": "0 20px !important"
+                }
+            });
+            rendition.themes.select("main");
+        }
+
+        function toggleNav() {
+            readerNav.classList.toggle('hidden');
+        }
+
+        // --- 4. PWA SERVICE WORKER (У цьому ж файлі) ---
+        function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                const swCode = `
+                    const CACHE = 'reader-cache-v1';
+                    self.addEventListener('install', e => {
+                        e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/'])));
+                    });
+                    self.addEventListener('fetch', e => {
+                        e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+                    });
+                `;
+                const blob = new Blob([swCode], { type: 'application/javascript' });
+                const swUrl = URL.createObjectURL(blob);
+                navigator.serviceWorker.register(swUrl).catch(err => console.log('SW failed', err));
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
